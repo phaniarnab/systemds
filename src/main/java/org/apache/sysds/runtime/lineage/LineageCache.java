@@ -19,6 +19,15 @@
 
 package org.apache.sysds.runtime.lineage;
 
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.hops.OptimizerUtils;
@@ -37,6 +46,7 @@ import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.MMTSJCPInstruction;
 import org.apache.sysds.runtime.instructions.cp.ParameterizedBuiltinCPInstruction;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
+import org.apache.sysds.runtime.lineage.LineageCacheConfig.LineageCacheStatus;
 import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
 import org.apache.sysds.runtime.matrix.data.InputInfo;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
@@ -44,20 +54,14 @@ import org.apache.sysds.runtime.matrix.data.OutputInfo;
 import org.apache.sysds.runtime.meta.MetaDataFormat;
 import org.apache.sysds.runtime.util.LocalFileUtils;
 
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-
 public class LineageCache {
 	private static final Map<LineageItem, Entry> _cache = new HashMap<>();
 	private static final Map<LineageItem, SpilledItem> _spillList = new HashMap<>();
 	private static final HashSet<LineageItem> _removelist = new HashSet<>();
 	private static final double CACHE_FRAC = 0.05; // 5% of JVM heap size
 	private static final long CACHE_LIMIT; //limit in bytes
-	private static String outdir = null;
+	private static String _outdir = null;
+	private static double _rw100mb = 0;
 	private static long _cachesize = 0;
 	private static Entry _head = null;
 	private static Entry _end = null;
@@ -65,6 +69,7 @@ public class LineageCache {
 	static {
 		long maxMem = InfrastructureAnalyzer.getLocalMaxMemory();
 		CACHE_LIMIT = (long)(CACHE_FRAC * maxMem);
+		//CACHE_LIMIT = 200*1024*1024; //DEBUG
 	}
 	
 	//--------------------- CACHE LOGIC METHODS ----------------------
@@ -173,18 +178,18 @@ public class LineageCache {
 	}
 	
 	//NOTE: safe to pin the object in memory as coming from CPInstruction
-	public static void put(Instruction inst, ExecutionContext ec) {
+	public static void put(Instruction inst, ExecutionContext ec, long exectime) {
 		if (inst instanceof ComputationCPInstruction && isReusable(inst, ec) ) {
 			LineageItem item = ((LineageTraceable) inst).getLineageItems(ec)[0];
 			//This method is called only to put matrix value
 			MatrixObject mo = ec.getMatrixObject(((ComputationCPInstruction) inst).output);
 			synchronized( _cache ) {
-				putIntern(item, mo.acquireReadAndRelease(), null, getRecomputeEstimate(inst, ec));
+				putIntern(item, mo.acquireReadAndRelease(), null, exectime);
 			}
 		}
 	}
 	
-	public static void putValue(Instruction inst, ExecutionContext ec) {
+	public static void putValue(Instruction inst, ExecutionContext ec, long RealExectime) {
 		if (ReuseCacheType.isNone())
 			return;
 		if (inst instanceof ComputationCPInstruction && isReusable(inst, ec) ) {
@@ -195,7 +200,7 @@ public class LineageCache {
 			MatrixObject mo = data instanceof MatrixObject ? (MatrixObject)data : null;
 			ScalarObject so = data instanceof ScalarObject ? (ScalarObject)data : null;
 			MatrixBlock Mval = mo != null ? mo.acquireReadAndRelease() : null;
-			_cache.get(item).setValue(Mval, so, getRecomputeEstimate(inst, ec)); //outside sync to prevent deadlocks
+			_cache.get(item).setValue(Mval, so, RealExectime); //outside sync to prevent deadlocks
 			long size = _cache.get(item).getSize();
 			
 			synchronized( _cache ) {
@@ -206,7 +211,7 @@ public class LineageCache {
 		}
 	}
 	
-	public static void putValue(LineageItem item, LineageItem probeItem) {
+	public static void putValue(LineageItem item, LineageItem probeItem, long RealExectime) {
 		if (ReuseCacheType.isNone())
 			return;
 		if (LineageCache.probe(probeItem)) {
@@ -214,9 +219,9 @@ public class LineageCache {
 			Entry e = _cache.get(item);
 			//TODO: compute estimate for function
 			if (oe.isMatrixValue())
-				e.setValue(oe.getMBValue(), null, 0); 
+				e.setValue(oe.getMBValue(), null, RealExectime); 
 			else
-				e.setValue(null, oe.getSOValue(), 0);
+				e.setValue(null, oe.getSOValue(), RealExectime);
 			e._origItem = probeItem; 
 
 			long size = oe.getSize();
@@ -231,7 +236,8 @@ public class LineageCache {
 
 	}
 
-	public static void putValue(List<String> outputs, int numOutputs, LineageItem[] liInputs, String name, ExecutionContext ec)
+	public static void putValue(List<String> outputs, int numOutputs, LineageItem[] liInputs, 
+			String name, ExecutionContext ec, long exectime)
 	{
 		if( ReuseCacheType.isNone() || !LineageCacheConfig.getCacheType().isMultilevelReuse())
 			return;
@@ -255,7 +261,7 @@ public class LineageCache {
 
 		//cache either all the outputs, or none.
 		if(AllOutputsCacheable) 
-			FuncLIMap.forEach((Li, boundLI) -> LineageCache.putValue(Li, boundLI));
+			FuncLIMap.forEach((Li, boundLI) -> LineageCache.putValue(Li, boundLI, exectime));
 		else 
 			//remove all the placeholders
 			FuncLIMap.forEach((Li, boundLI) -> LineageCache.removeEntry(Li));
@@ -263,14 +269,14 @@ public class LineageCache {
 		return;
 	}
 	
-	private static void putIntern(LineageItem key, MatrixBlock Mval, ScalarObject Sval, double compcost) {
+	private static void putIntern(LineageItem key, MatrixBlock Mval, ScalarObject Sval, long exectime) {
 		if (_cache.containsKey(key))
 			//can come here if reuse_partial option is enabled
 			return; 
 			//throw new DMLRuntimeException("Redundant lineage caching detected: "+inst);
 		
 		// Create a new entry.
-		Entry newItem = new Entry(key, Mval, Sval, compcost);
+		Entry newItem = new Entry(key, Mval, Sval, exectime);
 		
 		// Make space by removing or spilling LRU entries.
 		if( Mval != null || Sval != null ) {
@@ -292,9 +298,11 @@ public class LineageCache {
 	
 	protected static boolean probe(LineageItem key) {
 		boolean p = (_cache.containsKey(key) || _spillList.containsKey(key));
-		if (!p && DMLScript.STATISTICS && _removelist.contains(key))
+		if (!p && DMLScript.STATISTICS && _removelist.contains(key)) {
 			// The sought entry was in cache but removed later 
 			LineageCacheStatistics.incrementDelHits();
+			//System.out.println("LI "+key+" is deleted");
+		}
 		return p;
 	}
 	
@@ -303,6 +311,7 @@ public class LineageCache {
 		_spillList.clear();
 		_head = null;
 		_end = null;
+		_outdir = null;
 		// reset cache size, otherwise the cache clear leads to unusable 
 		// space which means evictions could run into endless loops
 		_cachesize = 0;
@@ -388,29 +397,75 @@ public class LineageCache {
 	
 	private static void makeSpace(long spaceNeeded) {
 		// cost based eviction
-		while ((spaceNeeded +_cachesize) > CACHE_LIMIT)
-		{
-			if (_cache.get(_end._key).isNullVal()) {
-				//Must be a null function/SB placeholder entry. This 
-				//function is currently being executed. Skip and continue.
-				setEnd2Head(_end);
+		Entry e = _end;
+		while (e != _head) {
+			if ((spaceNeeded +_cachesize) <= CACHE_LIMIT)
+				break;
+			
+			if (!LineageCacheConfig.isSetSpill()) {
+				removeEntry(e);
+				e = e._prev;
+				continue;
+			}
+
+			//if (!e.getCacheStatus().canEvict() || !e.isMatrixValue()) {
+			if (!e.getCacheStatus().canEvict()) {
+				//Skip 1) function/SB placeholders currently under exectuion
+				//2) entries with scalar object. Scalars can be part of
+				//function outputs, removing those can impact multi-level reuse.
+				//TODO: Array of MatrixBlocks and/or ScalarObjects in Entry
+				e = e._prev;
 				continue;
 			}
 			
-			double reduction = _cache.get(_end._key).getSize();
-			if (_cache.get(_end._key).isMatrixValue()) { //spill matrix blocks only
-				if (_cache.get(_end._key)._compEst > getDiskSpillEstimate() 
-						&& LineageCacheConfig.isSetSpill())
-					spillToLocalFS(); // If re-computation is more expensive, spill data to disk.
-			}
-
-			if (_cache.get(_end._key)._compEst == 0) {
-				//Must be a function/SB/scalar entry. Move to next.
-				//FIXME: Remove this logic after implementing new eviction logic.
-				setEnd2Head(_end);  
+			double exectime = ((double)e._exectime)/1000000; //in milliseconds
+			if (!e.isMatrixValue()) {
+				if (exectime < 100)
+					removeEntry(e);
+				e = e._prev;
 				continue;
 			}
-			removeEntry(reduction);
+			
+			//BigDecimal exectime = new BigDecimal(((double)e._exectime)/1000000);
+			//BigDecimal spilltime = new BigDecimal(getDiskSpillEstimate(e)*1000, MathContext.DECIMAL64);
+			double spilltime = getDiskSpillEstimate(e) * 1000;  //in milliseconds
+			
+			/*if (((double)e._exectime)/1000000 > 100) {
+				System.out.print("LI "+e._key.getOpcode());
+				System.out.print(" exec time "+((double)e._exectime)/1000000000);
+				System.out.print(" estimate time "+getDiskSpillEstimate(e));
+				System.out.print(" dim "+e.getMBValue().getNumRows()+" "+e.getMBValue().getNumColumns());
+				System.out.println(" size "+getDiskSizeEstimate(e));
+			}*/
+			
+			if (LineageCacheConfig.isSetSpill()) {
+				if (spilltime < 100) {
+					if (exectime >= 100)
+						spillToLocalFS(e); 
+				}
+				else {
+					if (exectime > spilltime)
+						spillToLocalFS(e);
+				}
+			}
+				
+			//System.out.print("estimated time :" + spilltime.toString() +" \n");
+			/*if (LineageCacheConfig.isSetSpill()
+					&& exectime.compareTo(spilltime) > 0
+					&& getDiskSizeEstimate(e) >= 20) {
+				//Spill to disk if 1) spilling is enabled, 2) size is more than 20MB
+				//as estimated spill time for smaller matrices are not perfect,
+				//3)re-execution is more expensive than to write and read.
+				long t0 = System.nanoTime();
+				spillToLocalFS(e); 
+				long t1 = System.nanoTime();
+				BigDecimal realSpilltime = new BigDecimal(((double)(t1-t0))/1000000);
+				System.out.println("actual write time :" + realSpilltime.toString());
+			}*/
+
+			//Remove the entry from cache.
+			removeEntry(e);
+			e = e._prev;
 		} 
 	}
 	
@@ -419,18 +474,34 @@ public class LineageCache {
 			_cachesize += space;
 		else
 			_cachesize -= space;
+		//System.out.println("current cache size "+_cachesize);
 	}
 
 	//---------------- COSTING RELATED METHODS -----------------
 
-	private static double getDiskSpillEstimate() {
-		// This includes sum of writing to and reading from disk
-		long t0 = DMLScript.STATISTICS ? System.nanoTime() : 0;
-		MatrixBlock mb = _cache.get(_end._key).getMBValue();
+	private static double getDiskSizeEstimate(Entry e) {
+		if (!e.isMatrixValue() || e.isNullVal())
+			return 0;
+		MatrixBlock mb = e.getMBValue();
 		long r = mb.getNumRows();
 		long c = mb.getNumColumns();
 		long nnz = mb.getNonZeros();
 		double s = OptimizerUtils.getSparsity(r, c, nnz);
+		double disksize = ((double)MatrixBlock.estimateSizeOnDisk(r, c, (long)(s*r*c))) / (1024*1024);
+		return disksize;
+	}
+
+	private static double getDiskSpillEstimate(Entry e) {
+		// This includes sum of writing to and reading from disk
+		long t0 = DMLScript.STATISTICS ? System.nanoTime() : 0;
+		MatrixBlock mb = e.getMBValue();
+		long r = mb.getNumRows();
+		long c = mb.getNumColumns();
+		long nnz = mb.getNonZeros();
+		double s = OptimizerUtils.getSparsity(r, c, nnz);
+		/*double disksize = ((double)MatrixBlock.estimateSizeOnDisk(r, c, (long)(s*r*c))) / (1024*1024);
+		System.out.println("\n");
+		System.out.println("Size : " + String.valueOf(disksize) +" ");*/
 		double loadtime = CostEstimatorStaticRuntime.getFSReadTime(r, c, s);
 		double writetime = CostEstimatorStaticRuntime.getFSWriteTime(r, c, s);
 		if (DMLScript.STATISTICS) 
@@ -585,15 +656,20 @@ public class LineageCache {
 
 	// ---------------- I/O METHODS TO LOCAL FS -----------------
 	
-	private static void spillToLocalFS() {
+	private static void spillToLocalFS(Entry entry) {
+		if (!entry.isMatrixValue())
+			throw new DMLRuntimeException ("Spilling scalar objects to disk is not allowd. Key: "+entry._key);
+		if (entry.isNullVal())
+			throw new DMLRuntimeException ("Cannot spill null value to disk. Key: "+entry._key);
 		long t0 = DMLScript.STATISTICS ? System.nanoTime() : 0;
-		if (outdir == null) {
-			outdir = LocalFileUtils.getUniqueWorkingDir(LocalFileUtils.CATEGORY_LINEAGE);
-			LocalFileUtils.createLocalFileIfNotExist(outdir);
+		if (_outdir == null) {
+			_outdir = LocalFileUtils.getUniqueWorkingDir(LocalFileUtils.CATEGORY_LINEAGE);
+			LocalFileUtils.createLocalFileIfNotExist(_outdir);
 		}
-		String outfile = outdir+"/"+_cache.get(_end._key)._key.getId();
+		//String outfile = _outdir+"/"+_cache.get(_end._key)._key.getId();
+		String outfile = _outdir+"/"+entry._key.getId();
 		try {
-			LocalFileUtils.writeMatrixBlockToLocal(outfile, _cache.get(_end._key).getMBValue());
+			LocalFileUtils.writeMatrixBlockToLocal(outfile, entry.getMBValue());
 		} catch (IOException e) {
 			throw new DMLRuntimeException ("Write to " + outfile + " failed.", e);
 		}
@@ -603,7 +679,7 @@ public class LineageCache {
 			LineageCacheStatistics.incrementFSWrites();
 		}
 
-		_spillList.put(_end._key, new SpilledItem(outfile, _end._compEst));
+		_spillList.put(entry._key, new SpilledItem(outfile, entry._exectime));
 	}
 	
 	private static Entry readFromLocalFS(LineageItem key) {
@@ -615,9 +691,14 @@ public class LineageCache {
 		} catch (IOException e) {
 			throw new DMLRuntimeException ("Read from " + _spillList.get(key)._outfile + " failed.", e);
 		}
+		/*long t1 = System.nanoTime();
+		BigDecimal realReadtime = new BigDecimal(((double)(t1-t0))/1000000);
+		System.out.println("actual read time :" + realReadtime.toString());*/
+
 		// Restore to cache
 		LocalFileUtils.deleteFileIfExists(_spillList.get(key)._outfile, true);
-		putIntern(key, mb, null, _spillList.get(key)._compEst);
+		putIntern(key, mb, null, _spillList.get(key)._exectime);
+		//TODO: set cache status as RELOADED for this entry
 		_spillList.remove(key);
 		if (DMLScript.STATISTICS) {
 			long t1 = System.nanoTime();
@@ -655,12 +736,17 @@ public class LineageCache {
 		setHead(entry);
 	}
 
-	private static void removeEntry(double space) {
+	private static void removeEntry(Entry e) {
+		if (_cache.remove(e._key) == null)
+			return;
+
 		if (DMLScript.STATISTICS)
-			_removelist.add(_end._key);
-		_cache.remove(_end._key);
-		_cachesize -= space;
-		delete(_end);
+			_removelist.add(e._key);
+
+		_cachesize -= e.getSize();
+		delete(e);
+		if (DMLScript.STATISTICS)
+			LineageCacheStatistics.incrementMemDeletes();
 	}
 	
 	public static void removeEntry(LineageItem key) {
@@ -675,16 +761,18 @@ public class LineageCache {
 		private final LineageItem _key;
 		private MatrixBlock _MBval;
 		private ScalarObject _SOval;
-		double _compEst;
+		private long _exectime;
+		private LineageCacheStatus _status = null;
 		private Entry _prev;
 		private Entry _next;
 		private LineageItem _origItem;
 		
-		public Entry(LineageItem key, MatrixBlock Mval, ScalarObject Sval, double computecost) {
+		public Entry(LineageItem key, MatrixBlock Mval, ScalarObject Sval, long exectime) {
 			_key = key;
 			_MBval = Mval;
 			_SOval = Sval;
-			_compEst = computecost;
+			_exectime = exectime;
+			_status = isNullVal() ? LineageCacheStatus.EMPTY : LineageCacheStatus.CACHED;
 			_origItem = null;
 		}
 
@@ -716,6 +804,10 @@ public class LineageCache {
 			}
 		}
 		
+		public synchronized LineageCacheStatus getCacheStatus() {
+			return _status;
+		}
+		
 		public synchronized long getSize() {
 			return ((_MBval != null ? _MBval.getInMemorySize() : 0) + (_SOval != null ? _SOval.getSize() : 0));
 		}
@@ -728,27 +820,38 @@ public class LineageCache {
 			return(_MBval != null);
 		}
 		
-		public synchronized void setValue(MatrixBlock val, double compEst) {
+		public synchronized void setValue(MatrixBlock val, long Exectime) {
 			_MBval = val;
-			_compEst = compEst;
+			_status = isNullVal() ? LineageCacheStatus.EMPTY : LineageCacheStatus.CACHED;
+			_exectime = Exectime;
 			notifyAll();
 		}
 
-		public synchronized void setValue(MatrixBlock mval, ScalarObject so, double compEst) {
+		public synchronized void setValue(MatrixBlock mval, ScalarObject so, long Exectime) {
 			_MBval = mval;
 			_SOval = so;
-			_compEst = compEst;
+			_status = isNullVal() ? LineageCacheStatus.EMPTY : LineageCacheStatus.CACHED;
+			_exectime = Exectime;
+			notifyAll();
+		}
+
+		public synchronized void setValue(MatrixBlock mval, ScalarObject so, 
+				LineageCacheStatus st, long Exectime) {
+			_MBval = mval;
+			_SOval = so;
+			_status = st;
+			_exectime = Exectime;
 			notifyAll();
 		}
 	}
 	
 	private static class SpilledItem {
 		String _outfile;
-		double _compEst;
+		long _exectime;
 
-		public SpilledItem(String outfile, double computecost) {
+		public SpilledItem(String outfile, long exectime) {
 			this._outfile = outfile;
-			this._compEst = computecost;
+			this._exectime= exectime;
 		}
 	}
 }

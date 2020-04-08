@@ -27,6 +27,7 @@ import org.apache.sysds.common.Types.BlockType;
 import org.apache.sysds.common.Types.CorrectionLocationType;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.OptimizerUtils;
+import org.apache.sysds.hops.cost.CostEstimatorStaticRuntime;
 import org.apache.sysds.lops.MMTSJ.MMTSJType;
 import org.apache.sysds.lops.MapMultChain.ChainType;
 import org.apache.sysds.runtime.DMLRuntimeException;
@@ -92,6 +93,7 @@ import org.apache.sysds.runtime.util.FastBufferedDataInputStream;
 import org.apache.sysds.runtime.util.FastBufferedDataOutputStream;
 import org.apache.sysds.runtime.util.HDFSTool;
 import org.apache.sysds.runtime.util.IndexRange;
+import org.apache.sysds.runtime.util.LocalFileUtils;
 import org.apache.sysds.runtime.util.UtilFunctions;
 import org.apache.sysds.utils.NativeHelper;
 
@@ -107,6 +109,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.stream.IntStream;
@@ -5730,5 +5733,64 @@ public class MatrixBlock extends MatrixValue implements CacheBlock, Externalizab
 			estimatedNonZeros=nnzs;
 		}
 		public SparsityEstimate(){}
+	}
+	private static String spillToLocalFS(MatrixBlock mb) {
+		String outdir = LocalFileUtils.getUniqueWorkingDir(LocalFileUtils.CATEGORY_LINEAGE);
+		LocalFileUtils.createLocalFileIfNotExist(outdir);
+		String outfile = outdir+"/"+1;
+		try {
+			LocalFileUtils.writeMatrixBlockToLocal(outfile, mb);
+		} catch (IOException e) {
+			throw new DMLRuntimeException ("Write to " + outfile + " failed.", e);
+		}
+		return outfile;
+	}
+	
+	private static MatrixBlock readFromLocalFS(String outfile) {
+		MatrixBlock mb = null;
+		// Read from local FS
+		try {
+			mb = LocalFileUtils.readMatrixBlockFromLocal(outfile);
+		} catch (IOException e) {
+			throw new DMLRuntimeException ("Read from " + outfile + " failed.", e);
+		}
+
+		//LocalFileUtils.deleteFileIfExists(outfile, true);
+		return mb;
+	}
+
+	public static void main (String[] args) {
+		System.out.println("Hello world!");
+		long r = 2000;
+		long c = 2000;
+		double s = 1.0;
+		double disksize = ((double)MatrixBlock.estimateSizeOnDisk(r, c, (long)(s*r*c))) / (1024*1024);
+		System.out.println("Size : " + String.valueOf(disksize) +"MB" +" ");
+		double loadtime = CostEstimatorStaticRuntime.getFSReadTime(r, c, s);
+		System.out.print("estimated loadtime : " + String.valueOf((loadtime)*1000) +" ");
+		double writetime = CostEstimatorStaticRuntime.getFSWriteTime(r, c, s);
+		System.out.println("estimated writetime : " + String.valueOf((writetime)*1000) +" ");
+		
+		double[][] matrix = new double[(int) r][(int) c];
+		Random random = new Random(1);
+		for (int i = 0; i < r; i++) {
+			for (int j = 0; j < c; j++) {
+				if (random.nextDouble() > 1.0)
+					continue;
+				matrix[i][j] = (random.nextDouble() * (1000 - (500)) + (500));
+			}
+		}
+		MatrixBlock mb = new MatrixBlock((int)r, (int)c, false);
+		mb.init(matrix, (int)r, (int)c);
+		//System.out.println(mb.estimateSizeOnDisk());
+		for (int i=0; i<10; i++) {
+			long t0 = System.nanoTime();
+			String outfile = spillToLocalFS(mb);
+			long t1 = System.nanoTime();
+			MatrixBlock mb_copy = readFromLocalFS(outfile);
+			long t2 = System.nanoTime();
+			System.out.print("actual loadtime : " + String.valueOf(((double)t2-t1)/1000000) +" ");
+			System.out.println("actual writetime : " + String.valueOf(((double)t1-t0)/1000000) +" ");
+		}
 	}
 }

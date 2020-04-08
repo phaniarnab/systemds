@@ -21,10 +21,16 @@
 
 # Increase k for better performance gains
 
-X = rand(rows=1024, cols=1024, seed=42);
+X = rand(rows=2000, cols=2000, seed=42);
 k = 10
 
 for(i in 1:k){
+    X = rand(rows=2000, cols=2000, seed=i);
+    tmp = t(X) %*% X;
+}
+while(FALSE){}
+for(i in 1:k){
+    X = rand(rows=2000, cols=2000, seed=i);
     tmp = t(X) %*% X;
 }
 

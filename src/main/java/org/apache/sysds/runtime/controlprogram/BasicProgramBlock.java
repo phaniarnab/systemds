@@ -108,16 +108,18 @@ public class BasicProgramBlock extends ProgramBlock
 		
 		//statement-block-level, lineage-based reuse
 		LineageItem[] liInputs = null;
+		long t0 = 0;
 		if (_sb != null 
 			&& !ReuseCacheType.isNone()
 			&& LineageCacheConfig.getCacheType().isMultilevelReuse()) {
 			String name = "SB" + _sb.getSBID();
 			liInputs = LineageItemUtils.getLineageItemInputstoSB(_sb.getInputstoSB(), ec);
-			if( LineageCache.reuse(_sb.getOutputsofSB(), _sb.getOutputsofSB().size(), liInputs, name, ec) ) {
+			if( liInputs != null && LineageCache.reuse(_sb.getOutputsofSB(), _sb.getOutputsofSB().size(), liInputs, name, ec) ) {
 				if( DMLScript.STATISTICS )
 					LineageCacheStatistics.incrementSBHits();
 				return;
 			}
+			t0 = System.nanoTime();
 		}
 
 		//actual instruction execution
@@ -126,7 +128,8 @@ public class BasicProgramBlock extends ProgramBlock
 		//statement-block-level, lineage-based caching
 		if (_sb != null && liInputs != null) {
 			String name = "SB" + _sb.getSBID();
-			LineageCache.putValue(_sb.getOutputsofSB(), _sb.getOutputsofSB().size(), liInputs, name, ec);
+			LineageCache.putValue(_sb.getOutputsofSB(), _sb.getOutputsofSB().size(), 
+					liInputs, name, ec, System.nanoTime()-t0);
 		}
 	}
 }

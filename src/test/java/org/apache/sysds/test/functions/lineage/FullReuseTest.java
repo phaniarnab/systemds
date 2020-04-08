@@ -87,6 +87,7 @@ public class FullReuseTest extends AutomatedTestBase {
 			// Without lineage-based reuse enabled
 			List<String> proArgs = new ArrayList<>();
 			proArgs.add("-stats");
+			proArgs.add("-explain");
 			proArgs.add("-lineage");
 			proArgs.add("-args");
 			proArgs.add(output("X"));

@@ -39,6 +39,7 @@ import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.runtime.io.IOUtilFunctions;
 import org.apache.sysds.runtime.lineage.Lineage;
 import org.apache.sysds.runtime.lineage.LineageCache;
+import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
 import org.apache.sysds.runtime.lineage.LineageCacheStatistics;
 import org.apache.sysds.runtime.lineage.LineageItem;
 import org.apache.sysds.runtime.lineage.LineageItemUtils;
@@ -170,6 +171,7 @@ public class FunctionCallCPInstruction extends CPInstruction {
 		}
 		fn_ec.setVariables(functionVariables);
 		fn_ec.setLineage(lineage);
+		long t0 = !ReuseCacheType.isNone() ? System.nanoTime() : 0;
 		// execute the function block
 		try {
 			fpb._functionName = this._functionName;
@@ -183,6 +185,7 @@ public class FunctionCallCPInstruction extends CPInstruction {
 			String fname = DMLProgram.constructFunctionKey(_namespace, _functionName);
 			throw new DMLRuntimeException("error executing function " + fname, e);
 		}
+		long t1 = !ReuseCacheType.isNone() ? System.nanoTime() : 0;
 		
 		// cleanup all returned variables w/o binding 
 		HashSet<String> expectRetVars = new HashSet<>();
@@ -224,7 +227,7 @@ public class FunctionCallCPInstruction extends CPInstruction {
 		}
 
 		//update lineage cache with the functions outputs
-		LineageCache.putValue(_boundOutputNames, numOutputs, liInputs, _functionName, ec);
+		LineageCache.putValue(_boundOutputNames, numOutputs, liInputs, _functionName, ec, t1-t0);
 	}
 
 	@Override

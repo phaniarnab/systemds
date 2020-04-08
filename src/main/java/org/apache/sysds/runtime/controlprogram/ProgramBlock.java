@@ -43,6 +43,7 @@ import org.apache.sysds.runtime.instructions.cp.IntObject;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
 import org.apache.sysds.runtime.instructions.cp.StringObject;
 import org.apache.sysds.runtime.lineage.LineageCache;
+import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.utils.Statistics;
 
@@ -195,7 +196,7 @@ public abstract class ProgramBlock implements ParseInfo
 		try
 		{
 			// start time measurement for statistics
-			long t0 = (DMLScript.STATISTICS || LOG.isTraceEnabled()) ?
+			long t0 = (DMLScript.STATISTICS || LOG.isTraceEnabled() || !ReuseCacheType.isNone()) ?
 				System.nanoTime() : 0;
 
 			// pre-process instruction (inst patching, listeners, lineage)
@@ -207,7 +208,7 @@ public abstract class ProgramBlock implements ParseInfo
 				tmp.processInstruction(ec);
 				
 				// cache result
-				LineageCache.putValue(tmp, ec);
+				LineageCache.putValue(tmp, ec, System.nanoTime()-t0);
 				
 				// post-process instruction (debug)
 				tmp.postprocessInstruction( ec );

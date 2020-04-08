@@ -56,6 +56,17 @@ public class LineageCacheConfig {
 		INDEX,
 		ALL
 	}
+
+	public enum LineageCacheStatus {
+		EMPTY,		//Placeholder with no data. Cannot be evicted. 
+		CACHED,		//General cached data. Can be evicted.
+		EVICTED,    //Data is in disk. Empty value. cannot be evicted.
+		RELOADED,	//Reloaded from disk. Can be evicted.
+		PINNED;		//Pinned to memory. Cannot be evicted.
+		public boolean canEvict() {
+			return this == CACHED || this == RELOADED;
+		}
+	}
 	
 	public ArrayList<String> _MMult = new ArrayList<>();
 	public static boolean _allowSpill = true;
