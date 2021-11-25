@@ -25,6 +25,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.ref.WeakReference;
 import java.security.cert.CertificateException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
@@ -119,6 +120,9 @@ public class DMLScript
 
 	public static String _uuid = IDHandler.createDistributedUniqueID();
 	private static final Log LOG = LogFactory.getLog(DMLScript.class.getName());
+
+  public static long maxMemory = 0;
+  public static int memCount = 0;
 
 	///////////////////////////////
 	// public external interface
@@ -419,6 +423,7 @@ public class DMLScript
 		try {
 			ec = ExecutionContextFactory.createContext(rtprog);
 			ScriptExecutorUtils.executeRuntimeProgram(rtprog, ec, ConfigurationManager.getDMLConfig(), STATISTICS ? STATISTICS_COUNT : 0, null);
+      System.out.println("Max memory: " + DMLScript.maxMemory + " bytes");
 		}
 		finally {
 			if(ec != null && ec instanceof SparkExecutionContext)
@@ -428,6 +433,21 @@ public class DMLScript
 			cleanupHadoopExecution( ConfigurationManager.getDMLConfig());
 		}
 	}
+
+  /**
+   * This method guarantees that garbage collection is
+	 * done unlike <code>{@link System#gc()}</code>
+	 */
+	public static void gc() {
+		Object obj = new Object();
+		WeakReference<Object> ref = new WeakReference<Object>(obj);
+		obj = null;
+		while (ref.get() != null) {
+			System.gc();
+		}
+	}
+
+	/**
 
 	/**
 	 * Sets the global flags in DMLScript based on user provided configuration

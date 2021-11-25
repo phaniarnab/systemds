@@ -257,6 +257,17 @@ public abstract class ProgramBlock implements ParseInfo
 
 				// maintain aggregate statistics
 				if( DMLScript.STATISTICS) {
+          // gc after each 100 instructions
+          if (DMLScript.memCount == 100) {
+						DMLScript.gc();
+						long maxMem = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+						if (maxMem > DMLScript.maxMemory)
+							DMLScript.maxMemory = maxMem;
+						DMLScript.memCount = 0;
+					} else {
+						DMLScript.memCount++;
+					}
+
 					Statistics.maintainCPHeavyHitters(
 						tmp.getExtendedOpcode(), System.nanoTime()-t0);
 				}
