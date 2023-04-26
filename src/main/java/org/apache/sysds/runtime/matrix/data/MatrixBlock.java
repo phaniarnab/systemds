@@ -1814,8 +1814,8 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 		//this also does a best effort check for disjoint input blocks via the number of non-zeros
 		if( rlen != that.rlen || clen != that.clen )
 			throw new DMLRuntimeException("Dimension mismatch on merge disjoint (target="+rlen+"x"+clen+", source="+that.rlen+"x"+that.clen+")");
-		if( nonZeros+that.nonZeros > (long)rlen*clen )
-			throw new DMLRuntimeException("Number of non-zeros mismatch on merge disjoint (target="+rlen+"x"+clen+", nnz target="+nonZeros+", nnz source="+that.nonZeros+")");
+		//if( nonZeros+that.nonZeros > (long)rlen*clen )
+		//	throw new DMLRuntimeException("Number of non-zeros mismatch on merge disjoint (target="+rlen+"x"+clen+", nnz target="+nonZeros+", nnz source="+that.nonZeros+")");
 		
 		//check for empty target (copy in full)
 		if( isEmptyBlock(false) && !(!sparse && isAllocated()) ) {

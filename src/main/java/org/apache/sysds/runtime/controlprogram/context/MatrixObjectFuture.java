@@ -71,16 +71,17 @@ public class MatrixObjectFuture extends MatrixObject
 		try {
 			if(!isAvailableToRead())
 				throw new DMLRuntimeException("MatrixObject not available to read.");
-			if(_data != null)
-				throw new DMLRuntimeException("_data must be null for future matrix object/block.");
+			if (_futureData == null)
+				return super.acquireRead();
 			MatrixBlock out = null;
-			acquire(false, false);
+			//acquire(false, false);
 			long t1 = System.nanoTime();
 			out = _futureData.get();
 			if (hasValidLineage())
 				LineageCache.putValueAsyncOp(getCacheLineage(), this, out, t1);
 				// FIXME: start time should indicate the actual start of the execution
-			return out;
+			return acquireModify(out);
+			//return out;
 		}
 
 		catch(Exception e) {
@@ -94,13 +95,17 @@ public class MatrixObjectFuture extends MatrixObject
 
 	private synchronized void releaseIntern() {
 		try {
-			if(isCachingActive() && _futureData.get().getInMemorySize() > CACHING_THRESHOLD)
-				_futureData = null;
-				//TODO: write to disk and other cache maintenance
+			//if(isCachingActive() && _futureData.get().getInMemorySize() > CACHING_THRESHOLD)
+			//	_futureData = null;
+			//	//TODO: write to disk and other cache maintenance
+
+			//acquireModify(_futureData.get());
+			super.release();
 		}
 		catch(Exception e) {
 			throw new DMLRuntimeException(e);
 		}
+
 	}
 
 	public synchronized void clearData(long tid) {

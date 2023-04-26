@@ -257,6 +257,7 @@ public class SparkExecutionContext extends ExecutionContext
 		//TODO if spark context passed in from outside (mlcontext), we need to clean this up at the end
 		if( HDFSTool.USE_BINARYBLOCK_SERIALIZATION )
 			HDFSTool.addBinaryBlockSerializationFramework( _spctx.hadoopConfiguration() );
+		//_spctx.sc().addSparkListener(new SparkJobTimeListener());
 
 		//statistics maintenance
 		if( DMLScript.STATISTICS ){

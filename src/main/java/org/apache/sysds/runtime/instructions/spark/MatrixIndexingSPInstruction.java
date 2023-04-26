@@ -244,6 +244,14 @@ public class MatrixIndexingSPInstruction extends IndexingSPInstruction {
 			|| OptimizerUtils.isIndexingRangeBlockAligned(ixrange, mcIn) ) {
 			out = in1.filter(new IsBlockInRange(ixrange.rowStart, ixrange.rowEnd, ixrange.colStart, ixrange.colEnd, mcOut))
 		             .mapToPair(new SliceSingleBlock(ixrange, mcOut));
+
+			int prefNInPart = SparkUtils.getNumPreferredPartitions(mcIn, in1);
+			int prefNOutPart = SparkUtils.getNumPreferredPartitions(mcOut);
+			System.out.println("Preferred number of input partitions = "+prefNInPart);
+			System.out.println("Preferred number of output partitions = "+prefNOutPart);
+			System.out.println(SparkUtils.isHashPartitioned(in1));
+			System.out.println(SparkExecutionContext.getDefaultParallelism(true));
+			out = out.coalesce(prefNOutPart);
 		}
 		else {
 			out = in1.filter(new IsBlockInRange(ixrange.rowStart, ixrange.rowEnd, ixrange.colStart, ixrange.colEnd, mcOut))
